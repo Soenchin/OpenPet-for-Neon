@@ -1,0 +1,17 @@
+node_modules/
+dist/
+src-tauri/target/
+.agents/
+.codex/
+.trellis/
+.workflow/
+AGENTS.md
+.playwright-mcp/
+playwright-report/
+test-results/
+openpet-settings-ui*.png
+*.log
+.env
+.env.*
+__pycache__/
+*.pyc
