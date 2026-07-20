@@ -30,8 +30,18 @@ jobs:
       - name: Set up Rust
         uses: dtolnay/rust-toolchain@stable
 
-      - name: Build Windows NSIS installer
-        run: pnpm tauri build --bundles nsis
+      # This fork builds private Windows artifacts, not signed updater payloads.
+      # The upstream config contains a public updater key, which makes Tauri
+      # require the upstream private key unless updater artifacts are disabled.
+      - name: Disable updater artifact signing for this CI build
+        shell: pwsh
+        run: |
+          @'
+          { "bundle": { "createUpdaterArtifacts": false } }
+          '@ | Set-Content -Path src-tauri/tauri.ci.conf.json -Encoding utf8
+
+      - name: Build unsigned Windows NSIS installer
+        run: pnpm tauri build --bundles nsis --no-sign --config src-tauri/tauri.ci.conf.json
 
       - name: Stage artifact
         shell: pwsh
