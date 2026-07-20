@@ -51,7 +51,9 @@ function groundY(workArea: Rect, surfaceSize: PetWindowSize): number {
 }
 
 function toAnimation(direction: PetDirection): PetAnimationId {
-  return direction > 0 ? 'running-right' : 'running-left';
+  // Neon's generated atlas uses the opposite-facing labels from the window
+  // coordinate convention: increasing desktop X must render row 2, not row 1.
+  return direction > 0 ? 'running-left' : 'running-right';
 }
 
 function horizontalBounds(

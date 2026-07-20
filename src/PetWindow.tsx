@@ -632,7 +632,9 @@ export function PetWindow() {
   }, [contextMenu]);
 
   useEffect(() => {
-    if (!settings.idleSelfPlay || settings.reducedMotion) return;
+    // Roaming owns the pet's behavior loop. Otherwise the idle self-play timer
+    // can inject waving/jumping/review into a running route mid-stride.
+    if (!settings.idleSelfPlay || settings.reducedMotion || settings.autonomousWalking) return;
 
     const timer = window.setInterval(() => {
       const now = Date.now();
@@ -660,6 +662,7 @@ export function PetWindow() {
     settings.idleSelfPlay,
     settings.idleThresholdMs,
     settings.reducedMotion,
+    settings.autonomousWalking,
   ]);
 
   useEffect(() => {
