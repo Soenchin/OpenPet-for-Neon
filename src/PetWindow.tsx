@@ -36,6 +36,7 @@ import {
   createInitialPetMotion,
   createRestingPetMotion,
   fallbackWorkArea,
+  findAdjacentMonitor,
   resolvePetMotion,
 } from './pet/motion';
 import {
@@ -78,6 +79,7 @@ const BUBBLE_STYLES = ['soft', 'comic', 'glass', 'terminal'] as const satisfies 
 
 type MonitorWorkArea = {
   rect: Rect;
+  monitorRects: Rect[];
   scaleFactor: number;
 };
 
@@ -121,12 +123,20 @@ async function readWorkArea(): Promise<MonitorWorkArea> {
       return {
         scaleFactor,
         rect: monitorWorkAreaToLogical(monitor.workArea, scaleFactor),
+        monitorRects: monitors
+          .filter((candidate) => candidate.workArea)
+          .map((candidate) =>
+            // Use the current window's scale for every monitor so all rects share
+            // one logical coordinate space before adjacency comparisons.
+            monitorWorkAreaToLogical(candidate.workArea, scaleFactor),
+          ),
       };
     }
   } catch {
     // Browser preview and unsupported hosts fall back to screen bounds.
   }
-  return { rect: fallbackWorkArea(), scaleFactor: 1 };
+  const rect = fallbackWorkArea();
+  return { rect, monitorRects: [rect], scaleFactor: 1 };
 }
 
 function hasTauriRuntime() {
@@ -179,6 +189,7 @@ export function PetWindow() {
   const nextClickActionRef = useRef(0);
   const motionRef = useRef<PetMotionState | null>(null);
   const workAreaRef = useRef<Rect>(fallbackWorkArea());
+  const monitorWorkAreasRef = useRef<Rect[]>([workAreaRef.current]);
   const workAreaScaleFactorRef = useRef(1);
   const surfaceSizeRef = useRef(getPetSurfaceSize(1));
   const surfaceInsetsRef = useRef(getPetSurfaceInsets(1));
@@ -191,6 +202,9 @@ export function PetWindow() {
   const cursorEventsIgnoredRef = useRef<boolean | null>(null);
   const lastActivityRef = useRef(Date.now());
   const lastIdleActionAtRef = useRef(0);
+  const announcedEdgeStopIdRef = useRef(0);
+  const monitorRefreshInFlightRef = useRef(false);
+  const autonomousWalkingRef = useRef(false);
 
   const tauriAvailable = hasTauriRuntime();
   const settings = snapshot.settings;
@@ -350,8 +364,46 @@ export function PetWindow() {
       state.nativeDragging = false;
       dragStateRef.current = null;
       setDragActive(false);
+
+      // A manual drop may have moved the pet to another monitor. Freeze roaming
+      // until we read the new monitor and its actual native window position, so
+      // an old target cannot pull the pet back across displays on the next tick.
+      if (!state.started || !tauriAvailable) return;
+      monitorRefreshInFlightRef.current = true;
+      void Promise.all([readWorkArea(), getCurrentWindow().innerPosition()])
+        .then(([snapshotWorkArea, position]) => {
+          workAreaRef.current = snapshotWorkArea.rect;
+          monitorWorkAreasRef.current = snapshotWorkArea.monitorRects;
+          workAreaScaleFactorRef.current = snapshotWorkArea.scaleFactor;
+          const current =
+            motionRef.current ??
+            createRestingPetMotion(
+              snapshotWorkArea.rect,
+              surfaceSizeRef.current,
+              surfaceInsetsRef.current,
+            );
+          motionRef.current = clampPetMotionToWorkArea(
+            {
+              ...current,
+              x: position.x / snapshotWorkArea.scaleFactor,
+              y: position.y / snapshotWorkArea.scaleFactor,
+              animation: 'idle',
+              mode: 'dwelling',
+              target: null,
+              edge: null,
+              waitUntilMs: Date.now() + 5_000,
+            },
+            snapshotWorkArea.rect,
+            surfaceSizeRef.current,
+            surfaceInsetsRef.current,
+          );
+        })
+        .catch(() => {})
+        .finally(() => {
+          monitorRefreshInFlightRef.current = false;
+        });
     },
-    [setDragActive],
+    [setDragActive, tauriAvailable],
   );
 
   const handlePointerDown = useCallback((event: ReactPointerEvent<HTMLDivElement>) => {
@@ -618,6 +670,24 @@ export function PetWindow() {
     let cancelled = false;
     const walkingPaused = (settings.hoverPause && hovered) || dragging;
 
+    // Turning roaming back on starts a fresh random route from the pet's current
+    // position; otherwise a resting state created while roaming was off would
+    // retain its intentionally infinite wait time.
+    if (autonomousWalkingRef.current !== settings.autonomousWalking) {
+      const current =
+        motionRef.current ??
+        createRestingPetMotion(workAreaRef.current, surfaceSize, surfaceInsets);
+      motionRef.current = {
+        ...current,
+        animation: 'idle',
+        mode: 'dwelling',
+        target: null,
+        edge: null,
+        waitUntilMs: settings.autonomousWalking ? 0 : Number.POSITIVE_INFINITY,
+      };
+      autonomousWalkingRef.current = settings.autonomousWalking;
+    }
+
     const resizeWindow = () => {
       if (!tauriAvailable) return;
       void getCurrentWindow()
@@ -627,6 +697,7 @@ export function PetWindow() {
     const refreshWorkArea = async () => {
       const snapshotWorkArea = await readWorkArea();
       workAreaRef.current = snapshotWorkArea.rect;
+      monitorWorkAreasRef.current = snapshotWorkArea.monitorRects;
       workAreaScaleFactorRef.current = snapshotWorkArea.scaleFactor;
       if (!motionRef.current) {
         motionRef.current = settings.autonomousWalking
@@ -643,6 +714,7 @@ export function PetWindow() {
     };
     const move = () => {
       if (cancelled) return;
+      if (monitorRefreshInFlightRef.current) return;
       const workArea = workAreaRef.current;
       if (!motionRef.current) {
         motionRef.current = settings.autonomousWalking
@@ -660,6 +732,15 @@ export function PetWindow() {
         speedPx: settings.walkingSpeedPx,
       });
       motionRef.current = next;
+      if (next.edgeStopId > announcedEdgeStopIdRef.current) {
+        announcedEdgeStopIdRef.current = next.edgeStopId;
+        if (next.edge && findAdjacentMonitor(workArea, monitorWorkAreasRef.current, next.edge)) {
+          say({
+            text: language === 'zh-CN' ? '带我去那边看看？' : 'Can you take me over there?',
+            ttlMs: 6000,
+          });
+        }
+      }
       if (Date.now() >= actionActiveUntilRef.current) setAnimation(next.animation);
       if (tauriAvailable && !draggingRef.current) {
         void getCurrentWindow()
@@ -687,6 +768,8 @@ export function PetWindow() {
     settings.scale,
     settings.walkingSpeedPx,
     tauriAvailable,
+    language,
+    say,
   ]);
 
   return (
