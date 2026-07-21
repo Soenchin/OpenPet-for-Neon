@@ -15,3 +15,6 @@ openpet-settings-ui*.png
 .env.*
 __pycache__/
 *.pyc
+
+# Personal pet artwork stays local; never commit it to this public fork.
+/public/pets/neon/
